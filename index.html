@@ -3,57 +3,110 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
-    <title>Web Cam Tool v4.0</title>
+    <title>sticker-cam</title>
     <style>
-        /* 100vhの不安定さを解消 */
         :root { --app-height: 100vh; }
 
-        html, body { 
+        html, body {
             position: fixed; top: 0; left: 0; right: 0; bottom: 0;
-            margin: 0; padding: 0; overflow: hidden; 
+            margin: 0; padding: 0; overflow: hidden;
             background: #000; color: white;
             display: flex; flex-direction: column;
             height: var(--app-height);
         }
 
-        /* プレビューエリア */
-        #viewport { 
-            flex: 1; position: relative; width: 100%; 
+        #viewport {
+            flex: 1; position: relative; width: 100%;
             background: #111; overflow: hidden; z-index: 1;
         }
         video { width: 100%; height: 100%; object-fit: contain; }
 
-        /* フレームレイヤー */
-        #frame-layer { 
-            position: absolute; top: 0; left: 0; 
-            will-change: transform; touch-action: none; 
+        #frame-layer {
+            position: absolute; top: 0; left: 0;
+            will-change: transform; touch-action: none;
             z-index: 10; display: none; transform-origin: 0 0;
         }
-        #frame-img { 
-            display: block; pointer-events: none; 
+        #frame-img {
+            display: block; pointer-events: none;
             transform-origin: center center;
             transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1);
         }
 
-        /* 操作パネル：最下部に固定 */
-        .controls { 
-            height: 160px; background: #1a1a1a; 
+        /* ステッカーパネル */
+        #sticker-panel {
+            background: #1a1a1a; border-top: 1px solid #333;
+            display: none; flex-direction: column; z-index: 100;
+        }
+        #sticker-panel.has-items { display: flex; }
+
+        .sticker-tabs {
+            display: flex; padding: 6px 12px 0; gap: 4px;
+        }
+        .sticker-tab {
+            background: none; border: none; color: #888; font-size: 12px;
+            font-weight: bold; padding: 4px 10px; border-radius: 8px 8px 0 0;
+            height: auto; line-height: normal; flex: none; cursor: pointer;
+        }
+        .sticker-tab.active { color: #fff; background: #333; }
+
+        .sticker-list {
+            display: flex; gap: 8px; padding: 8px 12px 10px;
+            overflow-x: auto; -webkit-overflow-scrolling: touch;
+            scrollbar-width: none;
+        }
+        .sticker-list::-webkit-scrollbar { display: none; }
+
+        .sticker-item {
+            position: relative; flex-shrink: 0;
+            width: 64px; height: 64px; border-radius: 10px;
+            background: #333; overflow: hidden; cursor: pointer;
+            border: 2px solid transparent;
+        }
+        .sticker-item:active { border-color: #007bff; }
+        .sticker-item img {
+            width: 100%; height: 100%; object-fit: contain;
+            pointer-events: none;
+        }
+        .sticker-fav {
+            position: absolute; top: 2px; right: 2px;
+            width: 22px; height: 22px; border-radius: 50%;
+            background: rgba(0,0,0,0.6); border: none; color: #888;
+            font-size: 12px; line-height: 22px; text-align: center;
+            padding: 0; cursor: pointer; flex: none;
+            height: 22px;
+        }
+        .sticker-fav.faved { color: #f1c40f; }
+        .sticker-del {
+            position: absolute; bottom: 2px; right: 2px;
+            width: 22px; height: 22px; border-radius: 50%;
+            background: rgba(0,0,0,0.6); border: none; color: #666;
+            font-size: 12px; line-height: 22px; text-align: center;
+            padding: 0; cursor: pointer; flex: none;
+            height: 22px; display: none;
+        }
+        .sticker-item:hover .sticker-del,
+        .sticker-item:active .sticker-del { display: block; }
+
+        /* 操作パネル */
+        .controls {
+            height: 160px; background: #1a1a1a;
             display: flex; flex-direction: column; justify-content: center;
             padding: 0 20px calc(env(safe-area-inset-bottom) / 2);
             z-index: 100; border-top: 1px solid #333;
         }
 
         .button-group { display: flex; gap: 10px; height: 60px; align-items: center; }
-        
-        button, label { 
-            display: block; background: #333; color: white; border: 1px solid #555; 
+
+        button, label {
+            display: block; background: #333; color: white; border: 1px solid #555;
             border-radius: 14px; font-size: 14px; font-weight: bold;
             height: 54px; line-height: 54px; cursor: pointer; flex: 1; text-align: center;
         }
         #shutter { background: #e74c3c; border: none; flex: 1.5; }
-        
+
         #exposure-ui { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; height: 30px; visibility: hidden; }
         input[type="range"] { flex: 1; accent-color: #f1c40f; }
+        input[type="file"] { display: none; }
 
         canvas { display: none; }
     </style>
@@ -63,6 +116,14 @@
 <div id="viewport">
     <video id="video" autoplay playsinline></video>
     <div id="frame-layer"><img id="frame-img" src=""></div>
+</div>
+
+<div id="sticker-panel">
+    <div class="sticker-tabs">
+        <button class="sticker-tab active" data-tab="recent">最近</button>
+        <button class="sticker-tab" data-tab="favs">お気に入り</button>
+    </div>
+    <div class="sticker-list" id="sticker-list"></div>
 </div>
 
 <div class="controls">
@@ -80,7 +141,6 @@
 <canvas id="canvas-output"></canvas>
 
 <script>
-    // 画面高さを固定する関数
     function lockHeight() {
         document.documentElement.style.setProperty('--app-height', `${window.innerHeight}px`);
     }
@@ -96,10 +156,164 @@
     const viewport = document.getElementById('viewport');
 
     let videoTrack = null;
-    let currentRotation = 0; 
+    let currentRotation = 0;
     let state = { x: 0, y: 0, scale: 1, lastX: 0, lastY: 0, lastDist: 0 };
 
-    // 1. カメラ起動
+    // === IndexedDB ステッカーストレージ ===
+    const DB_NAME = 'sticker-cam';
+    const DB_VER = 1;
+    let db = null;
+
+    function openDB() {
+        return new Promise((resolve, reject) => {
+            const req = indexedDB.open(DB_NAME, DB_VER);
+            req.onupgradeneeded = (e) => {
+                const d = e.target.result;
+                if (!d.objectStoreNames.contains('stickers')) {
+                    const store = d.createObjectStore('stickers', { keyPath: 'id' });
+                    store.createIndex('usedAt', 'usedAt');
+                }
+            };
+            req.onsuccess = (e) => { db = e.target.result; resolve(db); };
+            req.onerror = (e) => reject(e);
+        });
+    }
+
+    function makeThumbnail(dataUrl, maxSize) {
+        return new Promise((resolve) => {
+            const img = new Image();
+            img.onload = () => {
+                const c = document.createElement('canvas');
+                const ratio = Math.min(maxSize / img.width, maxSize / img.height, 1);
+                c.width = img.width * ratio;
+                c.height = img.height * ratio;
+                c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
+                resolve(c.toDataURL('image/png'));
+            };
+            img.src = dataUrl;
+        });
+    }
+
+    async function saveSticker(dataUrl) {
+        const thumb = await makeThumbnail(dataUrl, 128);
+        const id = 's_' + Date.now();
+        const record = { id, data: dataUrl, thumb, fav: false, usedAt: Date.now() };
+        return new Promise((resolve, reject) => {
+            const tx = db.transaction('stickers', 'readwrite');
+            tx.objectStore('stickers').put(record);
+            tx.oncomplete = () => { trimOldStickers(); resolve(record); };
+            tx.onerror = (e) => reject(e);
+        });
+    }
+
+    function updateSticker(record) {
+        return new Promise((resolve, reject) => {
+            const tx = db.transaction('stickers', 'readwrite');
+            tx.objectStore('stickers').put(record);
+            tx.oncomplete = () => resolve();
+            tx.onerror = (e) => reject(e);
+        });
+    }
+
+    function deleteSticker(id) {
+        return new Promise((resolve, reject) => {
+            const tx = db.transaction('stickers', 'readwrite');
+            tx.objectStore('stickers').delete(id);
+            tx.oncomplete = () => resolve();
+            tx.onerror = (e) => reject(e);
+        });
+    }
+
+    function getAllStickers() {
+        return new Promise((resolve, reject) => {
+            const tx = db.transaction('stickers', 'readonly');
+            const req = tx.objectStore('stickers').getAll();
+            req.onsuccess = () => resolve(req.result);
+            req.onerror = (e) => reject(e);
+        });
+    }
+
+    async function trimOldStickers() {
+        const all = await getAllStickers();
+        const nonFav = all.filter(s => !s.fav).sort((a, b) => b.usedAt - a.usedAt);
+        const MAX_RECENT = 20;
+        if (nonFav.length > MAX_RECENT) {
+            const toDelete = nonFav.slice(MAX_RECENT);
+            for (const s of toDelete) await deleteSticker(s.id);
+        }
+    }
+
+    // === ステッカーパネルUI ===
+    const stickerPanel = document.getElementById('sticker-panel');
+    const stickerList = document.getElementById('sticker-list');
+    let currentTab = 'recent';
+
+    document.querySelectorAll('.sticker-tab').forEach(tab => {
+        tab.addEventListener('click', () => {
+            currentTab = tab.dataset.tab;
+            document.querySelectorAll('.sticker-tab').forEach(t => t.classList.remove('active'));
+            tab.classList.add('active');
+            renderStickerList();
+        });
+    });
+
+    async function renderStickerList() {
+        const all = await getAllStickers();
+        let items;
+        if (currentTab === 'favs') {
+            items = all.filter(s => s.fav).sort((a, b) => b.usedAt - a.usedAt);
+        } else {
+            items = all.sort((a, b) => b.usedAt - a.usedAt);
+        }
+
+        stickerPanel.classList.toggle('has-items', all.length > 0);
+        stickerList.innerHTML = '';
+
+        items.forEach(s => {
+            const div = document.createElement('div');
+            div.className = 'sticker-item';
+            div.innerHTML = `<img src="${s.thumb}">` +
+                `<button class="sticker-fav ${s.fav ? 'faved' : ''}">★</button>` +
+                `<button class="sticker-del">✕</button>`;
+
+            div.addEventListener('click', (e) => {
+                if (e.target.closest('.sticker-fav') || e.target.closest('.sticker-del')) return;
+                loadStickerFromDB(s);
+            });
+
+            div.querySelector('.sticker-fav').addEventListener('click', async (e) => {
+                e.stopPropagation();
+                s.fav = !s.fav;
+                await updateSticker(s);
+                renderStickerList();
+            });
+
+            div.querySelector('.sticker-del').addEventListener('click', async (e) => {
+                e.stopPropagation();
+                await deleteSticker(s.id);
+                renderStickerList();
+            });
+
+            stickerList.appendChild(div);
+        });
+    }
+
+    function loadStickerFromDB(record) {
+        frameImg.src = record.data;
+        frameImg.onload = () => {
+            const vW = viewport.clientWidth;
+            const vH = viewport.clientHeight;
+            state.scale = (vW * 0.7) / frameImg.naturalWidth;
+            state.x = (vW - (frameImg.naturalWidth * state.scale)) / 2;
+            state.y = (vH - (frameImg.naturalHeight * state.scale)) / 2;
+            frameLayer.style.display = 'block';
+            updateTransform();
+        };
+        record.usedAt = Date.now();
+        updateSticker(record);
+    }
+
+    // === カメラ起動 ===
     async function startCamera() {
         try {
             const stream = await navigator.mediaDevices.getUserMedia({
@@ -107,7 +321,7 @@
             });
             video.srcObject = stream;
             videoTrack = stream.getVideoTracks()[0];
-            
+
             const caps = videoTrack.getCapabilities();
             if (caps.exposureCompensation) {
                 exposureUI.style.visibility = 'visible';
@@ -118,38 +332,38 @@
         } catch (err) { console.error("Camera Access Denied:", err); }
     }
 
-    // 2. PNG読み込み & 初期配置
-    document.getElementById('file-input').addEventListener('change', (e) => {
+    // === PNG読み込み → DB保存 & 配置 ===
+    document.getElementById('file-input').addEventListener('change', async (e) => {
         const file = e.target.files[0];
         if (!file) return;
         const reader = new FileReader();
-        reader.onload = (ev) => {
-            frameImg.src = ev.target.result;
+        reader.onload = async (ev) => {
+            const dataUrl = ev.target.result;
+            frameImg.src = dataUrl;
             frameImg.onload = () => {
                 const vW = viewport.clientWidth;
                 const vH = viewport.clientHeight;
-                // 初期スケール：画面幅の70%
                 state.scale = (vW * 0.7) / frameImg.naturalWidth;
-                // 初期位置：中央
                 state.x = (vW - (frameImg.naturalWidth * state.scale)) / 2;
                 state.y = (vH - (frameImg.naturalHeight * state.scale)) / 2;
                 frameLayer.style.display = 'block';
                 updateTransform();
             };
+            await saveSticker(dataUrl);
+            renderStickerList();
         };
         reader.readAsDataURL(file);
     });
 
-    // 3. 90度刻みの回転制御
+    // === 回転制御 ===
     function handleOrientation() {
         const orient = window.orientation || 0;
-        // デバイスの回転を打ち消すようにフレームを回す
-        currentRotation = -orient; 
+        currentRotation = -orient;
         updateTransform();
     }
     window.addEventListener("orientationchange", handleOrientation);
 
-    // 4. 操作(移動・拡大)
+    // === タッチ操作 ===
     viewport.addEventListener('touchstart', (e) => {
         if (!e.target.closest('#frame-layer')) return;
         if (e.touches.length === 1) {
@@ -183,7 +397,7 @@
         if (videoTrack) videoTrack.applyConstraints({ advanced: [{ exposureCompensation: parseFloat(e.target.value) }] });
     });
 
-    // 5. 撮影 & 合成
+    // === 撮影 & 合成 ===
     document.getElementById('shutter').addEventListener('click', () => {
         const ctx = canvas.getContext('2d');
         canvas.width = video.videoWidth;
@@ -206,7 +420,6 @@
 
         const s = canvas.width / realW;
 
-        // ビデオ描画
         ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
 
         if (frameImg.src && frameLayer.style.display !== 'none') {
@@ -222,14 +435,15 @@
             ctx.restore();
         }
 
-        // JPEG保存
         const link = document.createElement('a');
         link.download = `cam_${Date.now()}.jpg`;
         link.href = canvas.toDataURL('image/jpeg', 0.9);
         link.click();
     });
 
-    window.onload = () => {
+    window.onload = async () => {
+        await openDB();
+        renderStickerList();
         startCamera();
         handleOrientation();
     };
