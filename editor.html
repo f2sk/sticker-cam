@@ -41,7 +41,7 @@
         }
         .canvas-area { position: relative; display: inline-block; line-height: 0; background: #333; border-radius: 4px; overflow: hidden; }
         canvas {
-            max-width: 100%; height: auto; display: block; touch-action: none;
+            max-width: 100%; height: auto; display: block;
             background-image: linear-gradient(45deg, #444 25%, transparent 25%), linear-gradient(-45deg, #444 25%, transparent 25%), linear-gradient(45deg, transparent 75%, #444 75%), linear-gradient(-45deg, transparent 75%, #444 75%);
             background-size: 20px 20px; background-position: 0 0, 0 10px, 10px -10px, -10px 0px;
         }
@@ -236,6 +236,7 @@
 
         function toggleCropMode() {
             isCropMode = !isCropMode;
+            canvas.style.touchAction = isCropMode ? 'none' : '';
             document.getElementById('exec-crop-btn').style.display = isCropMode ? 'inline-block' : 'none';
             document.getElementById('crop-mode-btn').classList.toggle('active');
             if (isCropMode) resetCropRect();
