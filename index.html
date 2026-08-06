@@ -150,7 +150,8 @@
     </div>
     <div class="button-group">
         <label for="photo-input">写真</label>
-        <input type="file" id="photo-input" accept="image/*">
+        <!-- accept指定はAndroidでフォトピッカー(Googleフォト)に絞られローカルが選べないため付けない。画像判定はJS側で行う -->
+        <input type="file" id="photo-input">
         <label for="file-input">PNG選択</label>
         <input type="file" id="file-input" accept="image/png">
         <button id="shutter">撮影(JPG)</button>
@@ -384,6 +385,11 @@
     document.getElementById('photo-input').addEventListener('change', (e) => {
         const file = e.target.files[0];
         if (!file) return;
+        if (!file.type.startsWith('image/')) {
+            alert('画像ファイルを選んでください');
+            e.target.value = '';
+            return;
+        }
         const reader = new FileReader();
         reader.onload = (ev) => {
             bgImg.onload = () => {
