@@ -21,6 +21,21 @@
         }
         video { width: 100%; height: 100%; object-fit: contain; }
 
+        /* 既存写真モード用の背景画像 */
+        #bg-img {
+            position: absolute; top: 0; left: 0;
+            width: 100%; height: 100%; object-fit: contain;
+            display: none; z-index: 5; background: #111;
+        }
+        /* カメラ復帰ボタン（写真モード時のみ表示） */
+        #bg-close {
+            position: absolute; top: 12px; left: 12px; z-index: 20;
+            width: 40px; height: 40px; line-height: 40px; flex: none;
+            border-radius: 50%; background: rgba(0,0,0,0.55);
+            border: 1px solid #555; color: #fff; font-size: 16px;
+            padding: 0; display: none;
+        }
+
         #frame-layer {
             position: absolute; top: 0; left: 0;
             will-change: transform; touch-action: none;
@@ -115,6 +130,8 @@
 
 <div id="viewport">
     <video id="video" autoplay playsinline></video>
+    <img id="bg-img" src="" alt="">
+    <button id="bg-close">✕</button>
     <div id="frame-layer"><img id="frame-img" src=""></div>
 </div>
 
@@ -132,6 +149,8 @@
         <input type="range" id="exposure-slider" step="0.1">
     </div>
     <div class="button-group">
+        <label for="photo-input">写真</label>
+        <input type="file" id="photo-input" accept="image/*">
         <label for="file-input">PNG選択</label>
         <input type="file" id="file-input" accept="image/png">
         <button id="shutter">撮影(JPG)</button>
@@ -154,8 +173,13 @@
     const exposureSlider = document.getElementById('exposure-slider');
     const canvas = document.getElementById('canvas-output');
     const viewport = document.getElementById('viewport');
+    const bgImg = document.getElementById('bg-img');
+    const bgClose = document.getElementById('bg-close');
+    const shutterBtn = document.getElementById('shutter');
 
     let videoTrack = null;
+    let mode = 'camera';           // 'camera' | 'photo'
+    let exposureAvailable = false; // 露出補正UIの有無（カメラ復帰時の復元用）
     let currentRotation = 0;
     let state = { x: 0, y: 0, scale: 1, lastX: 0, lastY: 0, lastDist: 0 };
 
@@ -324,7 +348,8 @@
 
             const caps = videoTrack.getCapabilities();
             if (caps.exposureCompensation) {
-                exposureUI.style.visibility = 'visible';
+                exposureAvailable = true;
+                if (mode === 'camera') exposureUI.style.visibility = 'visible';
                 exposureSlider.min = caps.exposureCompensation.min;
                 exposureSlider.max = caps.exposureCompensation.max;
                 exposureSlider.value = 0;
@@ -353,6 +378,36 @@
             renderStickerList();
         };
         reader.readAsDataURL(file);
+    });
+
+    // === 既存写真を背景として読み込む（写真モード） ===
+    document.getElementById('photo-input').addEventListener('change', (e) => {
+        const file = e.target.files[0];
+        if (!file) return;
+        const reader = new FileReader();
+        reader.onload = (ev) => {
+            bgImg.onload = () => {
+                mode = 'photo';
+                bgImg.style.display = 'block';
+                bgClose.style.display = 'block';
+                video.style.display = 'none';
+                exposureUI.style.visibility = 'hidden';
+                shutterBtn.textContent = '保存(JPG)';
+            };
+            bgImg.src = ev.target.result;
+        };
+        reader.readAsDataURL(file);
+        e.target.value = ''; // 同じファイルを続けて選べるようリセット
+    });
+
+    // === カメラモードへ復帰 ===
+    bgClose.addEventListener('click', () => {
+        mode = 'camera';
+        bgImg.style.display = 'none';
+        bgClose.style.display = 'none';
+        video.style.display = 'block';
+        shutterBtn.textContent = '撮影(JPG)';
+        if (exposureAvailable) exposureUI.style.visibility = 'visible';
     });
 
     // === 回転制御 ===
@@ -398,29 +453,36 @@
     });
 
     // === 撮影 & 合成 ===
-    document.getElementById('shutter').addEventListener('click', () => {
+    shutterBtn.addEventListener('click', () => {
         const ctx = canvas.getContext('2d');
-        canvas.width = video.videoWidth;
-        canvas.height = video.videoHeight;
 
-        const vW = video.offsetWidth;
-        const vH = video.offsetHeight;
-        const rect = video.getBoundingClientRect();
-        const videoRatio = canvas.width / canvas.height;
+        // 合成元をモードに応じて切替（カメラ映像 or 既存写真）
+        const srcEl = mode === 'photo' ? bgImg : video;
+        const natW = mode === 'photo' ? bgImg.naturalWidth : video.videoWidth;
+        const natH = mode === 'photo' ? bgImg.naturalHeight : video.videoHeight;
+        if (!natW || !natH) return;
+
+        canvas.width = natW;
+        canvas.height = natH;
+
+        const vW = srcEl.offsetWidth;
+        const vH = srcEl.offsetHeight;
+        const rect = srcEl.getBoundingClientRect();
+        const srcRatio = canvas.width / canvas.height;
         const elementRatio = vW / vH;
         let realW, realH, realX, realY;
 
-        if (elementRatio > videoRatio) {
-            realH = vH; realW = vH * videoRatio;
+        if (elementRatio > srcRatio) {
+            realH = vH; realW = vH * srcRatio;
         } else {
-            realW = vW; realH = vW / videoRatio;
+            realW = vW; realH = vW / srcRatio;
         }
         realX = rect.left + (vW - realW) / 2;
         realY = rect.top + (vH - realH) / 2;
 
         const s = canvas.width / realW;
 
-        ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+        ctx.drawImage(srcEl, 0, 0, canvas.width, canvas.height);
 
         if (frameImg.src && frameLayer.style.display !== 'none') {
             ctx.save();
