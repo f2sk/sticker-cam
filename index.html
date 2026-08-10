@@ -202,6 +202,8 @@
         <label for="file-input">PNG選択</label>
         <!-- accept指定はAndroidでローカルが選べなくなるため付けない。PNG判定はJS側で行う -->
         <input type="file" id="file-input">
+        <!-- フレームモード専用: 透過窓に写真をフィット -->
+        <button id="fit-btn" style="display:none;">フィット</button>
         <button id="shutter">撮影(JPG)</button>
     </div>
 </div>
@@ -236,6 +238,10 @@
     const photoLayer = document.getElementById('photo-layer');
     const photoInner = document.getElementById('photo-inner');
     const frameFixed = document.getElementById('frame-fixed');
+    const fitBtn = document.getElementById('fit-btn');
+
+    // フレームPNGの透過部分のバウンディングボックス（フレーム実寸px）。nullなら未検出
+    let frameHole = null;
 
     let videoTrack = null;
     let mode = 'camera';           // 背景ソース: 'camera' | 'photo'（ステッカーモード用）
@@ -398,6 +404,7 @@
             frameFixed.onload = () => {
                 frameView.style.display = 'block';
                 fitFrame();
+                computeFrameHole();
                 if (photoInner.src) placePhotoInFrame();
                 updateTransform();
             };
@@ -455,6 +462,7 @@
                 frameFixed.onload = () => {
                     frameView.style.display = 'block';
                     fitFrame();
+                    computeFrameHole();
                     if (photoInner.src) placePhotoInFrame();
                     updateTransform();
                 };
@@ -544,15 +552,53 @@
         }
     }
 
-    // 中身の写真をフレーム枠いっぱいに初期配置（cover=隙間なく埋める）
+    // フレームPNGのアルファを走査し、透過部分のバウンディングボックスを検出する。
+    // frameHole = {x, y, w, h}（フレーム実寸px）。透過が無ければnull。
+    function computeFrameHole() {
+        frameHole = null;
+        if (!frameFixed.naturalWidth) return;
+        const c = document.createElement('canvas');
+        c.width = frameFixed.naturalWidth;
+        c.height = frameFixed.naturalHeight;
+        const cx = c.getContext('2d', { willReadFrequently: true });
+        cx.drawImage(frameFixed, 0, 0);
+        let data;
+        try { data = cx.getImageData(0, 0, c.width, c.height).data; }
+        catch (e) { return; } // 取得失敗時はnullのまま（全体フォールバック）
+        const ALPHA_T = 16; // これ未満のアルファを「透過」とみなす
+        let minX = c.width, minY = c.height, maxX = -1, maxY = -1;
+        for (let y = 0; y < c.height; y++) {
+            const row = y * c.width;
+            for (let x = 0; x < c.width; x++) {
+                if (data[(row + x) * 4 + 3] < ALPHA_T) {
+                    if (x < minX) minX = x;
+                    if (x > maxX) maxX = x;
+                    if (y < minY) minY = y;
+                    if (y > maxY) maxY = y;
+                }
+            }
+        }
+        if (maxX >= minX && maxY >= minY) {
+            frameHole = { x: minX, y: minY, w: maxX - minX + 1, h: maxY - minY + 1 };
+        }
+    }
+
+    // 中身の写真を「透過窓の最大横幅・縦幅」に合わせてフィット配置（contain=全体が収まる・中央寄せ）。
+    // 透過窓が検出できない場合はフレーム全体を対象にフォールバック。
     function placePhotoInFrame() {
-        const fw = frameView.clientWidth, fh = frameView.clientHeight;
         const pw = photoInner.naturalWidth, ph = photoInner.naturalHeight;
-        if (!pw || !ph || !fw || !fh) return;
-        const scale = Math.max(fw / pw, fh / ph);
+        if (!pw || !ph || !frameFixed.naturalWidth) return;
+        // フレーム実寸 → frame-view表示pxへの縮尺
+        const viewScale = frameView.clientWidth / frameFixed.naturalWidth;
+        const hole = frameHole || { x: 0, y: 0, w: frameFixed.naturalWidth, h: frameFixed.naturalHeight };
+        const winW = hole.w * viewScale;
+        const winH = hole.h * viewScale;
+        const winCX = (hole.x + hole.w / 2) * viewScale;
+        const winCY = (hole.y + hole.h / 2) * viewScale;
+        const scale = Math.min(winW / pw, winH / ph); // contain
         photoState.scale = scale;
-        photoState.x = (fw - pw * scale) / 2;
-        photoState.y = (fh - ph * scale) / 2;
+        photoState.x = winCX - pw * scale / 2;
+        photoState.y = winCY - ph * scale / 2;
     }
 
     // === モード切替 ===
@@ -571,10 +617,12 @@
             frameView.style.display = frameFixed.src ? 'block' : 'none';
             photoLayer.style.display = photoInner.src ? 'block' : 'none';
             shutterBtn.textContent = '保存(PNG)';
+            fitBtn.style.display = 'block';
             fitFrame();
         } else {
             // ステッカーモード: フレーム枠を隠し、背景ソースを復帰
             frameView.style.display = 'none';
+            fitBtn.style.display = 'none';
             frameLayer.style.display = frameImg.src ? 'block' : 'none';
             if (mode === 'photo') {
                 bgImg.style.display = 'block';
@@ -591,6 +639,13 @@
 
     document.querySelectorAll('.mode-btn').forEach(b => {
         b.addEventListener('click', () => setLayout(b.dataset.layout));
+    });
+
+    // 透過窓に写真をフィット（手動で位置調整した後の再フィット用）
+    fitBtn.addEventListener('click', () => {
+        if (layout !== 'frame' || !photoInner.src || !frameFixed.naturalWidth) return;
+        placePhotoInFrame();
+        updateTransform();
     });
 
     // === 回転制御 ===
