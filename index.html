@@ -47,6 +47,40 @@
             transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1);
         }
 
+        /* フレームモード: 固定フレーム枠（この矩形にクリップして中身写真を収める） */
+        #frame-view {
+            position: absolute; overflow: hidden;
+            display: none; z-index: 8;
+        }
+        #photo-layer {
+            position: absolute; top: 0; left: 0;
+            will-change: transform; touch-action: none;
+            transform-origin: 0 0;
+        }
+        #photo-inner {
+            display: block; pointer-events: none;
+            transform-origin: center center;
+        }
+        /* 最前面の固定フレームPNG（枠いっぱい・タッチは透過させる） */
+        #frame-fixed {
+            position: absolute; top: 0; left: 0;
+            width: 100%; height: 100%; pointer-events: none;
+        }
+
+        /* モード切替トグル（ビューポート上部中央に浮かせる） */
+        #mode-toggle {
+            position: absolute; top: 12px; left: 50%; transform: translateX(-50%);
+            z-index: 20; display: flex; gap: 0;
+            background: rgba(0,0,0,0.5); border: 1px solid #555;
+            border-radius: 12px; overflow: hidden;
+        }
+        .mode-btn {
+            background: none; border: none; color: #aaa; font-size: 12px;
+            font-weight: bold; height: 32px; line-height: 32px;
+            padding: 0 14px; flex: none; border-radius: 0; cursor: pointer;
+        }
+        .mode-btn.active { background: #007bff; color: #fff; }
+
         /* ステッカーパネル */
         #sticker-panel {
             background: #1a1a1a; border-top: 1px solid #333;
@@ -132,7 +166,20 @@
     <video id="video" autoplay playsinline></video>
     <img id="bg-img" src="" alt="">
     <button id="bg-close">✕</button>
+
+    <!-- ステッカーモード: 背景の上に貼る可動PNG -->
     <div id="frame-layer"><img id="frame-img" src=""></div>
+
+    <!-- フレームモード: 固定フレーム枠の中に可動写真を収める -->
+    <div id="frame-view">
+        <div id="photo-layer"><img id="photo-inner" src=""></div>
+        <img id="frame-fixed" src="">
+    </div>
+
+    <div id="mode-toggle">
+        <button class="mode-btn active" data-layout="sticker">ステッカー</button>
+        <button class="mode-btn" data-layout="frame">フレーム</button>
+    </div>
 </div>
 
 <div id="sticker-panel">
@@ -164,6 +211,13 @@
 <script>
     function lockHeight() {
         document.documentElement.style.setProperty('--app-height', `${window.innerHeight}px`);
+        // フレームモードで枠表示中なら、新しいビューポートサイズに合わせ直す
+        // （初回呼び出し時は let 変数が未初期化なので DOM 表示状態で判定）
+        const fv = document.getElementById('frame-view');
+        if (fv && fv.style.display === 'block') {
+            fitFrame();
+            updateTransform();
+        }
     }
     window.addEventListener('resize', lockHeight);
     lockHeight();
@@ -178,12 +232,26 @@
     const bgImg = document.getElementById('bg-img');
     const bgClose = document.getElementById('bg-close');
     const shutterBtn = document.getElementById('shutter');
+    const frameView = document.getElementById('frame-view');
+    const photoLayer = document.getElementById('photo-layer');
+    const photoInner = document.getElementById('photo-inner');
+    const frameFixed = document.getElementById('frame-fixed');
 
     let videoTrack = null;
-    let mode = 'camera';           // 'camera' | 'photo'
+    let mode = 'camera';           // 背景ソース: 'camera' | 'photo'（ステッカーモード用）
+    let layout = 'sticker';        // レイアウト: 'sticker'（背景＋可動PNG） | 'frame'（固定枠＋可動写真）
     let exposureAvailable = false; // 露出補正UIの有無（カメラ復帰時の復元用）
     let currentRotation = 0;
-    let state = { x: 0, y: 0, scale: 1, lastX: 0, lastY: 0, lastDist: 0 };
+    // ステッカーモード: 可動PNG(frame-layer)の変形状態
+    let stickerState = { x: 0, y: 0, scale: 1, lastX: 0, lastY: 0, lastDist: 0 };
+    // フレームモード: 可動写真(photo-layer)の変形状態（座標はframe-view内ローカル）
+    let photoState = { x: 0, y: 0, scale: 1, lastX: 0, lastY: 0, lastDist: 0 };
+
+    // 現在アクティブな可動レイヤーとその状態・ヒット判定セレクタ
+    function getActive() {
+        if (layout === 'frame') return { st: photoState, hit: '#photo-layer' };
+        return { st: stickerState, hit: '#frame-layer' };
+    }
 
     // === IndexedDB ステッカーストレージ ===
     const DB_NAME = 'sticker-cam';
@@ -325,16 +393,27 @@
     }
 
     function loadStickerFromDB(record) {
-        frameImg.src = record.data;
-        frameImg.onload = () => {
-            const vW = viewport.clientWidth;
-            const vH = viewport.clientHeight;
-            state.scale = (vW * 0.7) / frameImg.naturalWidth;
-            state.x = (vW - (frameImg.naturalWidth * state.scale)) / 2;
-            state.y = (vH - (frameImg.naturalHeight * state.scale)) / 2;
-            frameLayer.style.display = 'block';
-            updateTransform();
-        };
+        if (layout === 'frame') {
+            // フレームモード: 選んだPNGを固定フレームとして読み込む
+            frameFixed.onload = () => {
+                frameView.style.display = 'block';
+                fitFrame();
+                if (photoInner.src) placePhotoInFrame();
+                updateTransform();
+            };
+            frameFixed.src = record.data;
+        } else {
+            frameImg.src = record.data;
+            frameImg.onload = () => {
+                const vW = viewport.clientWidth;
+                const vH = viewport.clientHeight;
+                stickerState.scale = (vW * 0.7) / frameImg.naturalWidth;
+                stickerState.x = (vW - (frameImg.naturalWidth * stickerState.scale)) / 2;
+                stickerState.y = (vH - (frameImg.naturalHeight * stickerState.scale)) / 2;
+                frameLayer.style.display = 'block';
+                updateTransform();
+            };
+        }
         record.usedAt = Date.now();
         updateSticker(record);
     }
@@ -371,20 +450,32 @@
         const reader = new FileReader();
         reader.onload = async (ev) => {
             const dataUrl = ev.target.result;
-            frameImg.src = dataUrl;
-            frameImg.onload = () => {
-                const vW = viewport.clientWidth;
-                const vH = viewport.clientHeight;
-                state.scale = (vW * 0.7) / frameImg.naturalWidth;
-                state.x = (vW - (frameImg.naturalWidth * state.scale)) / 2;
-                state.y = (vH - (frameImg.naturalHeight * state.scale)) / 2;
-                frameLayer.style.display = 'block';
-                updateTransform();
-            };
+            if (layout === 'frame') {
+                // フレームモード: 固定フレームPNGとして読み込む
+                frameFixed.onload = () => {
+                    frameView.style.display = 'block';
+                    fitFrame();
+                    if (photoInner.src) placePhotoInFrame();
+                    updateTransform();
+                };
+                frameFixed.src = dataUrl;
+            } else {
+                frameImg.src = dataUrl;
+                frameImg.onload = () => {
+                    const vW = viewport.clientWidth;
+                    const vH = viewport.clientHeight;
+                    stickerState.scale = (vW * 0.7) / frameImg.naturalWidth;
+                    stickerState.x = (vW - (frameImg.naturalWidth * stickerState.scale)) / 2;
+                    stickerState.y = (vH - (frameImg.naturalHeight * stickerState.scale)) / 2;
+                    frameLayer.style.display = 'block';
+                    updateTransform();
+                };
+            }
             await saveSticker(dataUrl);
             renderStickerList();
         };
         reader.readAsDataURL(file);
+        e.target.value = ''; // 同じファイルを続けて選べるようリセット
     });
 
     // === 既存写真を背景として読み込む（写真モード） ===
@@ -398,15 +489,26 @@
         }
         const reader = new FileReader();
         reader.onload = (ev) => {
-            bgImg.onload = () => {
-                mode = 'photo';
-                bgImg.style.display = 'block';
-                bgClose.style.display = 'block';
-                video.style.display = 'none';
-                exposureUI.style.visibility = 'hidden';
-                shutterBtn.textContent = '保存(JPG)';
-            };
-            bgImg.src = ev.target.result;
+            if (layout === 'frame') {
+                // フレームモード: フレーム枠の中に収める写真として読み込む
+                photoInner.onload = () => {
+                    if (frameFixed.naturalWidth) placePhotoInFrame();
+                    photoLayer.style.display = 'block';
+                    updateTransform();
+                };
+                photoInner.src = ev.target.result;
+            } else {
+                // ステッカーモード: 背景写真として読み込む
+                bgImg.onload = () => {
+                    mode = 'photo';
+                    bgImg.style.display = 'block';
+                    bgClose.style.display = 'block';
+                    video.style.display = 'none';
+                    exposureUI.style.visibility = 'hidden';
+                    shutterBtn.textContent = '保存(JPG)';
+                };
+                bgImg.src = ev.target.result;
+            }
         };
         reader.readAsDataURL(file);
         e.target.value = ''; // 同じファイルを続けて選べるようリセット
@@ -422,6 +524,75 @@
         if (exposureAvailable) exposureUI.style.visibility = 'visible';
     });
 
+    // === フレームモード用ヘルパ ===
+    // 固定フレーム枠をビューポートにフィット（contain）させて配置。
+    // 既に写真を配置済みなら、枠サイズ変化に合わせて比例スケールする。
+    function fitFrame() {
+        if (!frameFixed.naturalWidth) return;
+        const vW = viewport.clientWidth, vH = viewport.clientHeight;
+        const iw = frameFixed.naturalWidth, ih = frameFixed.naturalHeight;
+        const scale = Math.min(vW / iw, vH / ih);
+        const newW = iw * scale, newH = ih * scale;
+        const oldW = frameView.clientWidth;
+        frameView.style.left = ((vW - newW) / 2) + 'px';
+        frameView.style.top = ((vH - newH) / 2) + 'px';
+        frameView.style.width = newW + 'px';
+        frameView.style.height = newH + 'px';
+        if (photoInner.src && oldW > 0) {
+            const r = newW / oldW;
+            photoState.x *= r; photoState.y *= r; photoState.scale *= r;
+        }
+    }
+
+    // 中身の写真をフレーム枠いっぱいに初期配置（cover=隙間なく埋める）
+    function placePhotoInFrame() {
+        const fw = frameView.clientWidth, fh = frameView.clientHeight;
+        const pw = photoInner.naturalWidth, ph = photoInner.naturalHeight;
+        if (!pw || !ph || !fw || !fh) return;
+        const scale = Math.max(fw / pw, fh / ph);
+        photoState.scale = scale;
+        photoState.x = (fw - pw * scale) / 2;
+        photoState.y = (fh - ph * scale) / 2;
+    }
+
+    // === モード切替 ===
+    function setLayout(newLayout) {
+        layout = newLayout;
+        document.querySelectorAll('.mode-btn').forEach(b =>
+            b.classList.toggle('active', b.dataset.layout === layout));
+
+        if (layout === 'frame') {
+            // フレームモード: ステッカー用と背景ソースを隠し、固定枠を表示
+            frameLayer.style.display = 'none';
+            video.style.display = 'none';
+            bgImg.style.display = 'none';
+            bgClose.style.display = 'none';
+            exposureUI.style.visibility = 'hidden';
+            frameView.style.display = frameFixed.src ? 'block' : 'none';
+            photoLayer.style.display = photoInner.src ? 'block' : 'none';
+            shutterBtn.textContent = '保存(PNG)';
+            fitFrame();
+        } else {
+            // ステッカーモード: フレーム枠を隠し、背景ソースを復帰
+            frameView.style.display = 'none';
+            frameLayer.style.display = frameImg.src ? 'block' : 'none';
+            if (mode === 'photo') {
+                bgImg.style.display = 'block';
+                bgClose.style.display = 'block';
+                shutterBtn.textContent = '保存(JPG)';
+            } else {
+                video.style.display = 'block';
+                shutterBtn.textContent = '撮影(JPG)';
+                if (exposureAvailable) exposureUI.style.visibility = 'visible';
+            }
+        }
+        updateTransform();
+    }
+
+    document.querySelectorAll('.mode-btn').forEach(b => {
+        b.addEventListener('click', () => setLayout(b.dataset.layout));
+    });
+
     // === 回転制御 ===
     function handleOrientation() {
         const orient = window.orientation || 0;
@@ -430,34 +601,43 @@
     }
     window.addEventListener("orientationchange", handleOrientation);
 
-    // === タッチ操作 ===
+    // === タッチ操作（アクティブな可動レイヤーを対象にする） ===
     viewport.addEventListener('touchstart', (e) => {
-        if (!e.target.closest('#frame-layer')) return;
+        const a = getActive();
+        if (!e.target.closest(a.hit)) return;
+        const st = a.st;
         if (e.touches.length === 1) {
-            state.lastX = e.touches[0].clientX - state.x;
-            state.lastY = e.touches[0].clientY - state.y;
+            st.lastX = e.touches[0].clientX - st.x;
+            st.lastY = e.touches[0].clientY - st.y;
         } else if (e.touches.length === 2) {
-            state.lastDist = Math.hypot(e.touches[0].clientX - e.touches[1].clientX, e.touches[0].clientY - e.touches[1].clientY);
+            st.lastDist = Math.hypot(e.touches[0].clientX - e.touches[1].clientX, e.touches[0].clientY - e.touches[1].clientY);
         }
     });
 
     viewport.addEventListener('touchmove', (e) => {
-        if (!e.target.closest('#frame-layer')) return;
+        const a = getActive();
+        if (!e.target.closest(a.hit)) return;
         e.preventDefault();
+        const st = a.st;
         if (e.touches.length === 1) {
-            state.x = e.touches[0].clientX - state.lastX;
-            state.y = e.touches[0].clientY - state.lastY;
+            st.x = e.touches[0].clientX - st.lastX;
+            st.y = e.touches[0].clientY - st.lastY;
         } else if (e.touches.length === 2) {
             const dist = Math.hypot(e.touches[0].clientX - e.touches[1].clientX, e.touches[0].clientY - e.touches[1].clientY);
-            state.scale *= (dist / state.lastDist);
-            state.lastDist = dist;
+            st.scale *= (dist / st.lastDist);
+            st.lastDist = dist;
         }
         updateTransform();
     }, { passive: false });
 
     function updateTransform() {
-        frameImg.style.transform = `rotate(${currentRotation}deg)`;
-        frameLayer.style.transform = `translate(${state.x}px, ${state.y}px) scale(${state.scale})`;
+        if (layout === 'frame') {
+            photoInner.style.transform = `rotate(${currentRotation}deg)`;
+            photoLayer.style.transform = `translate(${photoState.x}px, ${photoState.y}px) scale(${photoState.scale})`;
+        } else {
+            frameImg.style.transform = `rotate(${currentRotation}deg)`;
+            frameLayer.style.transform = `translate(${stickerState.x}px, ${stickerState.y}px) scale(${stickerState.scale})`;
+        }
     }
 
     exposureSlider.addEventListener('input', (e) => {
@@ -467,6 +647,37 @@
     // === 撮影 & 合成 ===
     shutterBtn.addEventListener('click', () => {
         const ctx = canvas.getContext('2d');
+
+        // --- フレームモード: 固定フレーム(実寸)の中に可動写真を収めて書き出す ---
+        if (layout === 'frame') {
+            if (!frameFixed.naturalWidth) return;
+            canvas.width = frameFixed.naturalWidth;
+            canvas.height = frameFixed.naturalHeight;
+            // 画面上のフレーム枠px → 出力ピクセルへの倍率（= 1/フィット縮尺）
+            const k = canvas.width / frameView.clientWidth;
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+            if (photoInner.src && photoLayer.style.display !== 'none') {
+                const pw = photoInner.naturalWidth, ph = photoInner.naturalHeight;
+                const drawW = pw * photoState.scale * k;
+                const drawH = ph * photoState.scale * k;
+                const cx = (photoState.x + pw * photoState.scale / 2) * k;
+                const cy = (photoState.y + ph * photoState.scale / 2) * k;
+                ctx.save();
+                ctx.translate(cx, cy);
+                ctx.rotate(currentRotation * Math.PI / 180);
+                ctx.drawImage(photoInner, -drawW / 2, -drawH / 2, drawW, drawH);
+                ctx.restore();
+            }
+            // フレームを最前面に重ねる（透過部から写真が覗く）
+            ctx.drawImage(frameFixed, 0, 0, canvas.width, canvas.height);
+
+            const link = document.createElement('a');
+            link.download = `frame_${Date.now()}.png`; // 透過保持のためPNG
+            link.href = canvas.toDataURL('image/png');
+            link.click();
+            return;
+        }
 
         // 合成元をモードに応じて切替（カメラ映像 or 既存写真）
         const srcEl = mode === 'photo' ? bgImg : video;
@@ -498,10 +709,10 @@
 
         if (frameImg.src && frameLayer.style.display !== 'none') {
             ctx.save();
-            const drawW = (frameImg.naturalWidth * state.scale) * s;
-            const drawH = (frameImg.naturalHeight * state.scale) * s;
-            const centerX = (state.x - realX) * s + drawW / 2;
-            const centerY = (state.y - realY) * s + drawH / 2;
+            const drawW = (frameImg.naturalWidth * stickerState.scale) * s;
+            const drawH = (frameImg.naturalHeight * stickerState.scale) * s;
+            const centerX = (stickerState.x - realX) * s + drawW / 2;
+            const centerY = (stickerState.y - realY) * s + drawH / 2;
 
             ctx.translate(centerX, centerY);
             ctx.rotate(currentRotation * Math.PI / 180);
