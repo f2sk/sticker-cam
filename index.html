@@ -226,6 +226,7 @@
         const fv = document.getElementById('frame-view');
         if (fv && fv.style.display === 'block') {
             fitFrame();
+            constrainPhoto();
             updateTransform();
         }
     }
@@ -252,6 +253,8 @@
 
     // フレームPNGの透過部分のバウンディングボックス（フレーム実寸px）。nullなら未検出
     let frameHole = null;
+    // フィット後のガイドレール軸。'x'=左右のみ可動 / 'y'=上下のみ可動 / null=自由
+    let railAxis = null;
 
     let videoTrack = null;
     let mode = 'camera';           // 背景ソース: 'camera' | 'photo'（ステッカーモード用）
@@ -630,19 +633,44 @@
         if (!pw || !ph || !frameFixed.naturalWidth) return;
         const m = frameWindowMetrics();
         applyPhotoScale(Math.max(m.winW / pw, m.winH / ph), m);
+        railAxis = null; // 初期配置は自由移動
     }
 
-    // 横幅フィット('w')＝写真幅を窓幅に / 縦幅フィット('h')＝写真高を窓高に。いずれも窓中心
+    // 横幅フィット('w')＝写真幅を窓幅に / 縦幅フィット('h')＝写真高を窓高に。いずれも窓中心。
+    // フィットした軸に垂直な方向だけスライドできるようレールを設定する。
     function fitPhotoTo(axis) {
         const pw = photoInner.naturalWidth, ph = photoInner.naturalHeight;
         if (!pw || !ph || !frameFixed.naturalWidth) return;
         const m = frameWindowMetrics();
         applyPhotoScale(axis === 'h' ? (m.winH / ph) : (m.winW / pw), m);
+        railAxis = axis === 'h' ? 'x' : 'y'; // 縦幅フィット→左右可動 / 横幅フィット→上下可動
+    }
+
+    // ガイドレール制約: 固定軸を窓中央に保ち、可動軸は窓を覆う範囲にクランプする。
+    function constrainPhoto() {
+        if (layout !== 'frame' || !railAxis || !photoInner.src || !frameFixed.naturalWidth) return;
+        const pw = photoInner.naturalWidth, ph = photoInner.naturalHeight;
+        const PW = pw * photoState.scale, PH = ph * photoState.scale;
+        const m = frameWindowMetrics();
+        const winLeft = m.cx - m.winW / 2, winRight = m.cx + m.winW / 2;
+        const winTop = m.cy - m.winH / 2, winBottom = m.cy + m.winH / 2;
+        if (railAxis === 'y') {
+            // 左右はロック（窓中央）、上下のみ可動＋クランプ
+            photoState.x = m.cx - PW / 2;
+            if (PH >= m.winH) photoState.y = Math.min(winTop, Math.max(winBottom - PH, photoState.y));
+            else photoState.y = m.cy - PH / 2; // 覆えない場合は中央
+        } else { // 'x'
+            // 上下はロック（窓中央）、左右のみ可動＋クランプ
+            photoState.y = m.cy - PH / 2;
+            if (PW >= m.winW) photoState.x = Math.min(winLeft, Math.max(winRight - PW, photoState.x));
+            else photoState.x = m.cx - PW / 2;
+        }
     }
 
     // === モード切替 ===
     function setLayout(newLayout) {
         layout = newLayout;
+        railAxis = null;
         document.querySelectorAll('.mode-btn').forEach(b =>
             b.classList.toggle('active', b.dataset.layout === layout));
 
@@ -709,6 +737,7 @@
             st.lastX = e.touches[0].clientX - st.x;
             st.lastY = e.touches[0].clientY - st.y;
         } else if (e.touches.length === 2) {
+            railAxis = null; // ズーム操作でレールは解除（自由移動に戻す）
             st.lastDist = Math.hypot(e.touches[0].clientX - e.touches[1].clientX, e.touches[0].clientY - e.touches[1].clientY);
         }
     });
@@ -726,6 +755,7 @@
             st.scale *= (dist / st.lastDist);
             st.lastDist = dist;
         }
+        constrainPhoto(); // レール有効時は1軸固定＋クランプ
         updateTransform();
     }, { passive: false });
 
